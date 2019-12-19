@@ -1,0 +1,19 @@
+### folders
+.idea
+.vscode
+coverage
+.nyc_output
+node_modules
+logs
+dist/*
+
+### matching
+*.log
+*.tgz
+
+### files
+package-lock.json
+
+### inverse
+!dist/.gitkeep
+!dist/readme.md

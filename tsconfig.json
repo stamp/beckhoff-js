@@ -1,0 +1,28 @@
+{
+  "compilerOptions": {
+    "outDir": "dist",
+    "strict": true,
+    "allowJs": false,
+    "pretty": true,
+    "resolveJsonModule": true,
+    "sourceMap": false,
+    "skipLibCheck": true,
+    "rootDir": "src",
+    "declaration": true,
+    "baseUrl": ".",
+    "target": "es2018",
+    "module": "commonjs",
+    "noImplicitAny": true,
+    "removeComments": true,
+    "allowUnreachableCode": true,
+    "lib": [
+      "es2017",
+      "es2018"
+    ],
+    "esModuleInterop": true
+  },
+  "compileOnSave": false,
+  "include": [
+    "src"
+  ]
+}

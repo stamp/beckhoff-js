@@ -1,0 +1,29 @@
+### folders
+node_modules
+scripts
+test
+.idea
+.vscode
+coverage
+.nyc_output
+build/Release
+src
+docs
+.circleci
+.github
+
+### files
+.editorconfig
+.gitattributes
+.gitignore
+.npmignore
+.dockerignore
+.travis.yml
+
+
+### matching
+*.log
+*Dockerfile*
+*.md
+*.tgz
+tsconfig*.json
