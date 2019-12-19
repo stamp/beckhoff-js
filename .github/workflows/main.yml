@@ -8,5 +8,12 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Typescript compiler
-        uses: iCrawl/action-tsc@v1
+    - uses: actions/checkout@v1
+    - name: install node v12
+      uses: actions/setup-node@v1
+      with:
+        node-version: 12
+    - name: npm install
+      run: npm install
+    - name: Typescript compiler
+      uses: iCrawl/action-tsc@v1
