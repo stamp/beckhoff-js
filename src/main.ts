@@ -499,7 +499,7 @@ export default class Client {
         const symbols:SymbolsList = {};
         let _buffer = symbolData.data;
 
-        do {
+        while (_buffer.length >= 26) {
           const entryLength = _buffer.readUInt32LE(0);
           if (_buffer.length >= entryLength && entryLength >= 26) {
             const entryData = _buffer.slice(4, entryLength);
@@ -523,7 +523,7 @@ export default class Client {
             symbols[sym.name] = sym;
             _buffer = _buffer.slice(entryLength);
           }
-        } while (_buffer.length >= 26)
+        }
 
 				this.connection.symbols = symbols;
         return symbols;
@@ -540,7 +540,7 @@ export default class Client {
         const dataTypes:DataTypesList = {};
         let _buffer = dataTypeData.data;
 
-        do {
+        while (_buffer.length >= 40) {
           const entryLength = _buffer.readUInt32LE(0);
           if (_buffer.length >= entryLength && entryLength >= 40) {
             const entryData = _buffer.slice(4, entryLength);
@@ -548,7 +548,7 @@ export default class Client {
             dataTypes[item.name] = item;
             _buffer = _buffer.slice(entryLength);
           }
-        } while (_buffer.length >= 40)
+        }
 
         this.connection.dataTypes = dataTypes;
         return dataTypes;
