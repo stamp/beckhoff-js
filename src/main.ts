@@ -50,7 +50,7 @@ interface UploadInfo {
 interface NotificationHandle {
   handle: number,
   tagName: string,
-  callbacks: Array<(value:any, timestamp: number) => void>;
+  callbacks: { [tagName: string]: (value:any, timestamp: number) => void };
 }
 interface Connection {
   connected: boolean;
@@ -424,8 +424,10 @@ export default class Client {
         throw new Error(`findTag: symbol with tag name "${tagName}" was not found`);
       }
 
-      tag.targetTag = systemTagName;
-      resolve(tag);
+      resolve({
+        ...tag,
+        targetTag: systemTagName,
+      });
     } catch (err) {
       reject(err);
     }
@@ -463,7 +465,7 @@ export default class Client {
       const tag = await this.findTag(tagName);
 
       if (this.connection.notifications[tag.name]) {
-        this.connection.notifications[tag.name].callbacks.push(callback);
+        this.connection.notifications[tag.name].callbacks[tag.targetTag || tag.name] = callback;
         return resolve(this.connection.notifications[tag.name].handle);
       }
 
@@ -473,9 +475,9 @@ export default class Client {
           const notificationHandle = {
             handle: resp.data.readUInt32LE(0),
             tagName: tag.targetTag || tag.name,
-            callbacks: [
-              callback
-            ],
+            callbacks: {
+              [tag.targetTag || tag.name]: callback
+            },
           };
           this.connection.notifications[tag.name] = notificationHandle;
           return this.connection.notifications[tag.name].handle;
@@ -739,13 +741,18 @@ export default class Client {
         const notificationHandle = Object.values(this.connection.notifications).find(nh => nh.handle === handle);
         if (notificationHandle) {
           this.findTag(notificationHandle.tagName).then(tag => {
-            const targetTag = tag.targetTag && tag.targetTag
-              .substring(tag.name.length, tag.targetTag.length)
-              .split('.')
-              .filter(Boolean);
-            const parsed = this.parse(tag, sample, targetTag || undefined);
             const timestamp = FileTime.toDate(timestampLow,timestampHigh);
-            notificationHandle.callbacks.forEach(callback => callback(parsed, timestamp));
+            Object.keys(notificationHandle.callbacks)
+              .forEach(tagName => {
+                const targetTag = tagName
+                  .substring(tag.name.length, tagName.length)
+                  .split('.')
+                  .filter(Boolean);
+                const parsed = this.parse(tag, sample, targetTag || undefined);
+
+                const callback = notificationHandle.callbacks[tagName];
+                callback(parsed, timestamp)
+              });
           });
         }
 
