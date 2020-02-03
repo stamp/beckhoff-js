@@ -44,7 +44,7 @@ export const decode = (_buffer: Buffer): Packet | void => {
   };
 
   if (_buffer.length < header.length) {
-    throw new Error(`data length is to short, expected ${header.length} but got ${_buffer.length}`);
+    throw new Error(`decode: data length is to short, expected ${header.length} but got ${_buffer.length}`);
   }
 
   switch(header.commandId) {

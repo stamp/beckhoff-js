@@ -201,392 +201,460 @@ export default class Client {
   on = (eventName: string, listener: () => any ) => this._emitter.on(eventName, listener)
 
   connect = () => new Promise<void>((resolve, reject) => {
-    if (this._socket !== null) {
-      reject(new Error('disconnect before starting a new connection'));
+    try {
+      if (this._socket !== null) {
+        throw new Error('disconnect before starting a new connection');
+      }
+      debug.connection('connect()');
+
+      const socket = new net.Socket();
+      this._socket = socket;
+      this.connection.connected = false;
+
+      // Disables the Nagle algorithm. By default TCP connections use the Nagle algorithm, they buffer data before sending it off. Setting true for noDelay will immediately fire off data each time socket.write() is called.
+      socket.setNoDelay(true);
+
+      socket.on('connect', () => {
+        this.connectHandler()
+          .then(() => {
+            this.connection.connected = true;
+          })
+          .then(() => Promise.all([
+              this.getDeviceInfo(),
+              this.getDeviceState(),
+              this.options.loadSymbols ? this.getSymbols() : undefined,
+              this.options.loadDataTypes ? this.getDataTypes() : undefined,
+          ]))
+          .then(() => resolve())
+          .catch(reject);
+      });
+      socket.on('data', this.dataHandler);
+      socket.on('timeout', this.timeoutHandler);
+      socket.on('error', this.errorHandler);
+      socket.on('close', this.closeHandler);
+
+      const {
+        port,
+        host,
+      } = this.options.target;
+
+      socket.connect(port || 48898, host);
+
+    } catch (err) {
+      reject(err);
     }
-    debug.connection('connect()');
-
-    const socket = new net.Socket();
-    this._socket = socket;
-    this.connection.connected = false;
-
-    // Disables the Nagle algorithm. By default TCP connections use the Nagle algorithm, they buffer data before sending it off. Setting true for noDelay will immediately fire off data each time socket.write() is called.
-    socket.setNoDelay(true);
-
-    socket.on('connect', () => {
-      this.connectHandler()
-        .then(() => {
-          this.connection.connected = true;
-        })
-        .then(() => Promise.all([
-            this.getDeviceInfo(),
-            this.getDeviceState(),
-            this.options.loadSymbols ? this.getSymbols() : undefined,
-            this.options.loadDataTypes ? this.getDataTypes() : undefined,
-        ]))
-        .then(() => resolve())
-        .catch(reject);
-    });
-    socket.on('data', this.dataHandler);
-    socket.on('timeout', this.timeoutHandler);
-    socket.on('error', this.errorHandler);
-    socket.on('close', this.closeHandler);
-
-    const {
-      port,
-      host,
-    } = this.options.target;
-
-    socket.connect(port || 48898, host);
   })
   close = () => new Promise<void>(async (resolve, reject) => {
-    debug.connection('close()');
+    try {
+      debug.connection('close()');
 
-    const notifications = Object.values(this.connection.notifications);
+      const notifications = Object.values(this.connection.notifications);
 
-    const done = () =>  {
-      this.connection = {
-        connected: false,
-        deviceInfo: null,
-        deviceState: null,
-        uploadInfo: null,
-        symbols: null,
-        dataTypes: null,
-        notifications: {},
+      const done = () =>  {
+        this.connection = {
+          connected: false,
+          deviceInfo: null,
+          deviceState: null,
+          uploadInfo: null,
+          symbols: null,
+          dataTypes: null,
+          notifications: {},
+        };
+        resolve();
       };
-      resolve();
-    };
 
-    if (this._socket) {
-      // Make sure to release all notification handles before we disconnect
-      Promise.all(Object.values(this.connection.notifications).map(notificationHandle => this.unsubscribe(notificationHandle.handle))).then(() => {
-        if (this._socket) {
-          this._socket.end();
-        }
-        this._socket = null;
+      if (this._socket) {
+        // Make sure to release all notification handles before we disconnect
+        Promise.all(Object.values(this.connection.notifications).map(notificationHandle => this.unsubscribe(notificationHandle.handle))).then(() => {
+          if (this._socket) {
+            this._socket.end();
+          }
+          this._socket = null;
+          done();
+        });
+      } else {
         done();
-      });
-    } else {
-      done();
+      }
+    } catch (err) {
+      reject(err);
     }
   });
 
   request = (command: Command, data: Buffer) => new Promise<Response>((resolve, reject) => {
-    const header = Buffer.allocUnsafe(32);
-    const invokeID = this._invokeID++;
+    try {
+      const header = Buffer.allocUnsafe(32);
+      const invokeID = this._invokeID++;
 
-    // Build the header
-    this._commandHeader.copy(header, 0); // ams net IDs and ams ports
-    header.writeUInt16LE(command, 16); // Command ID
-    header.writeUInt16LE(0x0004, 18); // Flags: command + request
-    header.writeUInt32LE(data.length, 20); // Data length
-    header.writeUInt32LE(0x0, 24); // Error Code
-    header.writeUInt32LE(invokeID, 28); // InvokeID
+      // Build the header
+      this._commandHeader.copy(header, 0); // ams net IDs and ams ports
+      header.writeUInt16LE(command, 16); // Command ID
+      header.writeUInt16LE(0x0004, 18); // Flags: command + request
+      header.writeUInt32LE(data.length, 20); // Data length
+      header.writeUInt32LE(0x0, 24); // Error Code
+      header.writeUInt32LE(invokeID, 28); // InvokeID
 
-    // Add the request data
-    const packet = Buffer.alloc(6 + header.length + data.length);
-    packet.writeUInt32LE(header.length + data.length, 2);
-    header.copy(packet, 6);
-    data.copy(packet, 38);
+      // Add the request data
+      const packet = Buffer.alloc(6 + header.length + data.length);
+      packet.writeUInt32LE(header.length + data.length, 2);
+      header.copy(packet, 6);
+      data.copy(packet, 38);
 
-    // Make sure we have a connection
-    if (this._socket) {
-      // Add a callback to our list of ongoing requests
-      this._requests[`${invokeID}`] = (resp) => {
-        // Check if the response we got contained an error code
-        if (resp.header.errorCode) {
-          debug.connection('received ads error ', resp.header.errorCode);
-          reject(new Error(Errors[resp.header.errorCode] || `Ads error code ${resp.header.errorCode}`));
-          delete this._requests[`${invokeID}`];
+      // Make sure we have a connection
+      if (this._socket) {
+        // Add a callback to our list of ongoing requests
+        this._requests[`${invokeID}`] = (resp) => {
+          // Check if the response we got contained an error code
+          if (resp.header.errorCode) {
+            debug.connection('request: received ads error ', resp.header.errorCode);
+            delete this._requests[`${invokeID}`];
+            throw new Error(Errors[resp.header.errorCode] || `Ads error code ${resp.header.errorCode}`);
+          }
+
+          // else everything went fine and we can resolve the promise
+          resolve(resp);
         }
 
-        // else everything went fine and we can resolve the promise
-        resolve(resp);
+        // Start a timeout monitor of reach request, max 30 seconds
+        setTimeout(() => {
+          if (this._requests[`${invokeID}`]) {
+            debug.connection('timeout invokeID', invokeID);
+            delete this._requests[`${invokeID}`];
+            reject(new Error("request: timeout"));
+          }
+        }, 30000);
+
+        // Send the request
+        debug.connection('send: ', packet, packet.length);
+        this._socket.write(packet);
+        return;
       }
 
-      // Start a timeout monitor of reach request, max 30 seconds
-      setTimeout(() => {
-        if (this._requests[`${invokeID}`]) {
-          debug.connection('timeout invokeID', invokeID);
-          reject(new Error("timeout"));
-          delete this._requests[`${invokeID}`];
-        }
-      }, 30000);
-
-      // Send the request
-      debug.connection('send: ', packet, packet.length);
-      this._socket.write(packet);
-      return;
+      throw new Error('request: not connected');
+    } catch (err) {
+      reject(err);
     }
-
-    reject(new Error('not connected'));
   })
 
   read = (group: number, offset: number, size: number) => new Promise<Response>((resolve, reject) => {
-    debug.ads(`ADS read: ${group}, ${offset}, ${size}`);
-    const data = Buffer.allocUnsafe(12);
-    data.writeUInt32LE(group, 0);
-    data.writeUInt32LE(offset, 4);
-    data.writeUInt32LE(size, 8);
+    try {
+      debug.ads(`ADS read: ${group}, ${offset}, ${size}`);
+      const data = Buffer.allocUnsafe(12);
+      data.writeUInt32LE(group, 0);
+      data.writeUInt32LE(offset, 4);
+      data.writeUInt32LE(size, 8);
 
-    this.request(Command.Read, data)
-      .then(resolve)
-      .catch(reject);
+      this.request(Command.Read, data)
+        .then(resolve)
+        .catch(reject);
+    } catch (err) {
+      reject(err);
+    }
   })
   write = (group: number, offset: number, size: number, value: Buffer) => new Promise<Response>((resolve, reject) => {
-    if (value.length !== size) {
-      return reject(new Error(`expected write size (${size} bytes) and provided data (${value.length} bytes) differs in length`));
+    try {
+      if (value.length !== size) {
+        throw new Error(`expected write size (${size} bytes) and provided data (${value.length} bytes) differs in length`);
+      }
+
+      debug.ads(`ADS write: ${group}, ${offset}, ${size}`);
+      const data = Buffer.allocUnsafe(12 + size);
+      data.writeUInt32LE(group, 0);
+      data.writeUInt32LE(offset, 4);
+      data.writeUInt32LE(size, 8);
+      value.copy(data, 12);
+
+      this.request(Command.Write, data)
+        .then(resolve)
+        .catch(reject);
+    } catch (err) {
+      reject(err);
     }
-
-    debug.ads(`ADS write: ${group}, ${offset}, ${size}`);
-    const data = Buffer.allocUnsafe(12 + size);
-    data.writeUInt32LE(group, 0);
-    data.writeUInt32LE(offset, 4);
-    data.writeUInt32LE(size, 8);
-    value.copy(data, 12);
-
-    this.request(Command.Write, data)
-      .then(resolve)
-      .catch(reject);
   })
   subscribe = (group: number, offset: number, size: number) => new Promise<Response>((resolve, reject) => {
-    debug.ads(`ADS addDeviceNotification: g${group}, o${offset}, s${size}`);
-		const transmissionMode = 4; // 3=Cyclic, 4=OnChange
-		const maxDelay = 10; // At the latest after this time, the ADS Device Notification is called. The unit is 1ms.
-		const cycleTime = 10; // The ADS server checks if the value changes in this time slice. The unit is 1ms
+    try {
+      debug.ads(`ADS addDeviceNotification: g${group}, o${offset}, s${size}`);
+      const transmissionMode = 4; // 3=Cyclic, 4=OnChange
+      const maxDelay = 10; // At the latest after this time, the ADS Device Notification is called. The unit is 1ms.
+      const cycleTime = 10; // The ADS server checks if the value changes in this time slice. The unit is 1ms
 
-    const data = Buffer.alloc(40);
-    data.writeUInt32LE(group, 0);
-    data.writeUInt32LE(offset, 4);
-    data.writeUInt32LE(size, 8);
-    data.writeUInt32LE(transmissionMode, 12);
-    data.writeUInt32LE(maxDelay, 16);
-    data.writeUInt32LE(cycleTime, 20);
+      const data = Buffer.alloc(40);
+      data.writeUInt32LE(group, 0);
+      data.writeUInt32LE(offset, 4);
+      data.writeUInt32LE(size, 8);
+      data.writeUInt32LE(transmissionMode, 12);
+      data.writeUInt32LE(maxDelay, 16);
+      data.writeUInt32LE(cycleTime, 20);
 
-    this.request(Command.AddDeviceNotification, data)
-      .then(resolve)
-      .catch(reject);
+      this.request(Command.AddDeviceNotification, data)
+        .then(resolve)
+        .catch(reject);
+    } catch (err) {
+      reject(err);
+    }
   })
   unsubscribe = (handle: number) => new Promise<Response>((resolve, reject) => {
-    debug.ads(`ADS deleteDeviceNotification: handle ${handle}`);
+    try {
+      debug.ads(`ADS deleteDeviceNotification: handle ${handle}`);
 
-    const data = Buffer.alloc(4);
-    data.writeUInt32LE(handle, 0);
+      const data = Buffer.alloc(4);
+      data.writeUInt32LE(handle, 0);
 
-    this.request(Command.DeleteDeviceNotification, data)
-      .then(resolve)
-      .catch(reject);
+      this.request(Command.DeleteDeviceNotification, data)
+        .then(resolve)
+        .catch(reject);
+    } catch (err) {
+      reject(err);
+    }
 	})
 
   findTag = (tagName: string) => new Promise<SymbolData>(async (resolve, reject) => {
-    debug.ads(`ADS findTag: ${tagName}`);
-    if (!this.connection.symbols) {
-      await this.getSymbols();
-    }
+    try {
+      debug.ads(`ADS findTag: ${tagName}`);
+      if (!this.connection.symbols) {
+        await this.getSymbols();
+      }
 
-    if (!this.connection.symbols) {
-      throw new Error(`symbol with tag name "${tagName}" was not found`);
-    }
+      if (!this.connection.symbols) {
+        throw new Error(`findTag: symbol with tag name "${tagName}" was not found`);
+      }
 
-    const systemTagName = tagName.toUpperCase();
-    const tag = Object.values(this.connection.symbols).find(s => s.systemName === systemTagName.substring(0, s.systemName.length));
-    if (!tag) {
-      throw new Error(`symbol with tag name "${tagName}" was not found`);
-    }
+      const systemTagName = tagName.toUpperCase();
+      const tag = Object.values(this.connection.symbols).find(s => s.systemName === systemTagName.substring(0, s.systemName.length));
+      if (!tag) {
+        throw new Error(`findTag: symbol with tag name "${tagName}" was not found`);
+      }
 
-    tag.targetTag = systemTagName;
-    resolve(tag);
+      tag.targetTag = systemTagName;
+      resolve(tag);
+    } catch (err) {
+      reject(err);
+    }
   })
   readTag = (tagName: string) => new Promise<any>(async (resolve, reject) => {
-    const tag = await this.findTag(tagName);
+    try {
+      const tag = await this.findTag(tagName);
 
-		this.read(tag.group, tag.offset, tag.size)
-			.then(resp => this.parse(tag, resp.data))
-      .then(resolve)
-      .catch(reject);
+      this.read(tag.group, tag.offset, tag.size)
+        .then(resp => this.parse(tag, resp.data))
+        .then(resolve)
+        .catch(reject);
+    } catch (err) {
+      reject(err);
+    }
   })
   writeTag = (tagName: string, value: any) => new Promise<Response>(async (resolve, reject) => {
-    const tag = await this.findTag(tagName);
-
     try {
+      const tag = await this.findTag(tagName);
+
       const encoded = this.encode(tag, value);
       if (encoded.offset < tag.offset || encoded.offset > tag.offset + tag.size) {
-        return reject(new Error(`encoded offset (${encoded.offset}) is outside of the symbol offset (${tag.offset} - ${tag.offset + tag.size})`));
+        throw new Error(`writeTag: encoded offset (${encoded.offset}) is outside of the symbol offset (${tag.offset} - ${tag.offset + tag.size})`);
       }
 
       this.write(tag.group, encoded.offset, encoded.size, encoded.data)
         .then(resolve)
         .catch(reject);
-    } catch(er) {
-      reject(er);
-      return;
+    } catch (err) {
+      reject(err);
     }
   })
   monitorTag = (tagName: string, callback: (value: any) => void) => new Promise<any>(async (resolve, reject) => {
-    const tag = await this.findTag(tagName);
+    try {
+      const tag = await this.findTag(tagName);
 
-    if (this.connection.notifications[tag.name]) {
-      this.connection.notifications[tag.name].callbacks.push(callback);
-      return resolve(this.connection.notifications[tag.name].handle);
+      if (this.connection.notifications[tag.name]) {
+        this.connection.notifications[tag.name].callbacks.push(callback);
+        return resolve(this.connection.notifications[tag.name].handle);
+      }
+
+      const resp = await
+      this.subscribe(tag.group, tag.offset, tag.size)
+        .then(resp => {
+          const notificationHandle = {
+            handle: resp.data.readUInt32LE(0),
+            tagName: tag.targetTag || tag.name,
+            callbacks: [
+              callback
+            ],
+          };
+          this.connection.notifications[tag.name] = notificationHandle;
+          return this.connection.notifications[tag.name].handle;
+        })
+        .then(resolve)
+        .catch(reject);
+    } catch (err) {
+      reject(err);
     }
-
-    const resp = await
-    this.subscribe(tag.group, tag.offset, tag.size)
-      .then(resp => {
-        const notificationHandle = {
-          handle: resp.data.readUInt32LE(0),
-          tagName: tag.targetTag || tag.name,
-          callbacks: [
-            callback
-          ],
-        };
-        this.connection.notifications[tag.name] = notificationHandle;
-        return this.connection.notifications[tag.name].handle;
-      })
-      .then(resolve)
-      .catch(reject);
   })
   stopMonitorTag = (tagName: string, callback: (value: any) => void | undefined) => new Promise<any>(async (resolve, reject) => {
-    const tag = await this.findTag(tagName);
-    const notificationHandle = this.connection.notifications[tag.name];
-    if (!notificationHandle) {
-      return resolve();
-    }
+    try {
+      const tag = await this.findTag(tagName);
+      const notificationHandle = this.connection.notifications[tag.name];
+      if (!notificationHandle) {
+        return resolve();
+      }
 
-    this.unsubscribe(notificationHandle.handle)
-      .then(resp => {
-        delete this.connection.notifications[tag.name];
-        return resp;
-      })
-      .then(resolve)
-      .catch(reject);
+      this.unsubscribe(notificationHandle.handle)
+        .then(resp => {
+          delete this.connection.notifications[tag.name];
+          return resp;
+        })
+        .then(resolve)
+        .catch(reject);
+    } catch (err) {
+      reject(err);
+    }
   })
 
   getUploadInfo = () => new Promise<UploadInfo>((resolve, reject) => {
-    // If we already have the upload information and its not to old (10s), use the cached info
-    const { uploadInfoTimestamp, uploadInfo } = this.connection;
-    if (uploadInfo !== null && (!uploadInfoTimestamp || (+new Date) - uploadInfoTimestamp < 10000)) {
-      return resolve(uploadInfo);
+    try {
+      // If we already have the upload information and its not to old (10s), use the cached info
+      const { uploadInfoTimestamp, uploadInfo } = this.connection;
+      if (uploadInfo !== null && (!uploadInfoTimestamp || (+new Date) - uploadInfoTimestamp < 10000)) {
+        return resolve(uploadInfo);
+      }
+
+      // Load the upload information from the PLC
+      this.read(ads.ADSIGRP.SYM_UPLOADINFO2, 0, 24)
+        .then(uploadinfo2 => {
+          if (uploadinfo2.data.length < 24) {
+            throw new Error("getUploadInfo: did not receive the expected 24 bytes");
+          }
+
+          const uploadInfo = {
+            symbolCount: uploadinfo2.data.readUInt32LE(0),
+            symbolLength: uploadinfo2.data.readUInt32LE(4),
+            dataTypeCount: uploadinfo2.data.readUInt32LE(8),
+            dataTypeLength: uploadinfo2.data.readUInt32LE(12),
+            extraCount: uploadinfo2.data.readUInt32LE(16),
+            extraLength: uploadinfo2.data.readUInt32LE(20),
+          };
+
+          // Cache the upload information so we dont have to ask for it every time
+          this.connection.uploadInfo = uploadInfo;
+          this.connection.uploadInfoTimestamp = + new Date();
+          return uploadInfo
+        })
+        .then(resolve)
+        .catch(reject);
+    } catch (err) {
+      reject(err);
     }
-
-    // Load the upload information from the PLC
-    this.read(ads.ADSIGRP.SYM_UPLOADINFO2, 0, 24)
-      .then(uploadinfo2 => {
-        const uploadInfo = {
-          symbolCount: uploadinfo2.data.readUInt32LE(0),
-          symbolLength: uploadinfo2.data.readUInt32LE(4),
-          dataTypeCount: uploadinfo2.data.readUInt32LE(8),
-          dataTypeLength: uploadinfo2.data.readUInt32LE(12),
-          extraCount: uploadinfo2.data.readUInt32LE(16),
-          extraLength: uploadinfo2.data.readUInt32LE(20),
-        };
-
-        // Cache the upload information so we dont have to ask for it every time
-        this.connection.uploadInfo = uploadInfo;
-        this.connection.uploadInfoTimestamp = + new Date();
-        return uploadInfo
-      })
-      .then(resolve)
-      .catch(reject);
   });
 
   getSymbols = () => new Promise<SymbolsList>(async (resolve, reject) => {
-    debug.ads(`Read symbols`);
-    const { symbolLength } = await this.getUploadInfo();
+    try {
+      debug.ads(`Read symbols`);
+      const { symbolLength } = await this.getUploadInfo();
 
-    this.read(ads.ADSIGRP.SYM_UPLOAD, 0, symbolLength)
-      .then(symbolData => {
-        const symbols:SymbolsList = {};
-        let _buffer = symbolData.data;
+      this.read(ads.ADSIGRP.SYM_UPLOAD, 0, symbolLength)
+        .then(symbolData => {
+          const symbols:SymbolsList = {};
+          let _buffer = symbolData.data;
 
-        while (_buffer.length >= 26) {
-          const entryLength = _buffer.readUInt32LE(0);
-          if (_buffer.length >= entryLength && entryLength >= 26) {
-            const entryData = _buffer.slice(4, entryLength);
+          while (_buffer.length >= 26) {
+            const entryLength = _buffer.readUInt32LE(0);
+            if (_buffer.length >= entryLength && entryLength >= 26) {
+              const entryData = _buffer.slice(4, entryLength);
 
-            const nameLength = entryData.readUInt16LE(20);
-            const typeLength = entryData.readUInt16LE(22);
-            const commentLength = entryData.readUInt16LE(24);
+              const nameLength = entryData.readUInt16LE(20);
+              const typeLength = entryData.readUInt16LE(22);
+              const commentLength = entryData.readUInt16LE(24);
 
-            const sym = {
-              group: entryData.readUInt32LE(0),
-              offset: entryData.readUInt32LE(4),
-              size: entryData.readUInt32LE(8),
-              dataType: entryData.readUInt32LE(12),
-              flags: entryData.readUInt32LE(16),
-              name: entryData.toString('ascii', 26, 26 + nameLength),
-              systemName: entryData.toString('ascii', 26, 26 + nameLength).toUpperCase(),
-              type: entryData.toString('ascii', 27 + nameLength, 27 + nameLength + typeLength),
-              comment: entryData.toString('ascii', 28 + nameLength + typeLength, 28 + nameLength + typeLength + commentLength)
-            };
+              const sym = {
+                group: entryData.readUInt32LE(0),
+                offset: entryData.readUInt32LE(4),
+                size: entryData.readUInt32LE(8),
+                dataType: entryData.readUInt32LE(12),
+                flags: entryData.readUInt32LE(16),
+                name: entryData.toString('ascii', 26, 26 + nameLength),
+                systemName: entryData.toString('ascii', 26, 26 + nameLength).toUpperCase(),
+                type: entryData.toString('ascii', 27 + nameLength, 27 + nameLength + typeLength),
+                comment: entryData.toString('ascii', 28 + nameLength + typeLength, 28 + nameLength + typeLength + commentLength)
+              };
 
-            symbols[sym.name] = sym;
-            _buffer = _buffer.slice(entryLength);
+              symbols[sym.name] = sym;
+              _buffer = _buffer.slice(entryLength);
+            }
           }
-        }
 
-				this.connection.symbols = symbols;
-        return symbols;
-      })
-      .then(resolve)
-      .catch(reject);
+          this.connection.symbols = symbols;
+          return symbols;
+        })
+        .then(resolve)
+        .catch(reject);
+    } catch (err) {
+      reject(err);
+    }
   })
   getDataTypes = () => new Promise<DataTypesList>(async (resolve, reject) => {
-    debug.ads(`Read datatypes`);
-    const { dataTypeLength } = await this.getUploadInfo();
+    try {
+      debug.ads(`Read datatypes`);
+      const { dataTypeLength } = await this.getUploadInfo();
 
-    this.read(ads.ADSIGRP.SYM_DT_UPLOAD, 0, dataTypeLength)
-      .then(dataTypeData => {
-        const dataTypes:DataTypesList = {};
-        let _buffer = dataTypeData.data;
+      this.read(ads.ADSIGRP.SYM_DT_UPLOAD, 0, dataTypeLength)
+        .then(dataTypeData => {
+          const dataTypes:DataTypesList = {};
+          let _buffer = dataTypeData.data;
 
-        while (_buffer.length >= 40) {
-          const entryLength = _buffer.readUInt32LE(0);
-          if (_buffer.length >= entryLength && entryLength >= 40) {
-            const entryData = _buffer.slice(4, entryLength);
-            const item = this.decodeDataType(entryData);
-            dataTypes[item.name] = item;
-            _buffer = _buffer.slice(entryLength);
+          while (_buffer.length >= 40) {
+            const entryLength = _buffer.readUInt32LE(0);
+            if (_buffer.length >= entryLength && entryLength >= 40) {
+              const entryData = _buffer.slice(4, entryLength);
+              const item = this.decodeDataType(entryData);
+              dataTypes[item.name] = item;
+              _buffer = _buffer.slice(entryLength);
+            }
           }
-        }
 
-        this.connection.dataTypes = dataTypes;
-        return dataTypes;
-      })
-      .then(resolve)
-      .catch(reject);
+          this.connection.dataTypes = dataTypes;
+          return dataTypes;
+        })
+        .then(resolve)
+        .catch(reject);
+    } catch (err) {
+      reject(err);
+    }
   })
   getDeviceInfo = () => new Promise<DeviceInfo>((resolve, reject) => {
-    debug.ads(`Read device info`);
+    try {
+      debug.ads(`Read device info`);
 
-    this.request(Command.ReadDeviceInfo, Buffer.alloc(0))
-      .then(resp => ({
-        majorVersion: resp.data.readUInt8(0),
-        minorVersion: resp.data.readUInt8(1),
-        buildVersion: resp.data.readUInt16LE(2),
-        deviceName: resp.data.toString('latin1', 4, 18)
-      }))
-      .then(resp => {
-        this.connection.deviceInfo = resp;
-        return resp;
-      })
-      .then(resolve)
-      .catch(reject);
+      this.request(Command.ReadDeviceInfo, Buffer.alloc(0))
+        .then(resp => ({
+          majorVersion: resp.data.readUInt8(0),
+          minorVersion: resp.data.readUInt8(1),
+          buildVersion: resp.data.readUInt16LE(2),
+          deviceName: resp.data.toString('latin1', 4, 18)
+        }))
+        .then(resp => {
+          this.connection.deviceInfo = resp;
+          return resp;
+        })
+        .then(resolve)
+        .catch(reject);
+    } catch (err) {
+      reject(err);
+    }
   })
   getDeviceState = () => new Promise<DeviceState>((resolve, reject) => {
-    debug.ads(`Read device state`);
+    try {
+      debug.ads(`Read device state`);
 
-    this.request(Command.ReadState, Buffer.alloc(0))
-      .then(resp => ({
-        adsState: resp.data.readUInt16LE(0),
-        deviceState: resp.data.readUInt16LE(2),
-      }))
-      .then(resp => {
-        this.connection.deviceState = resp;
-        return resp;
-      })
-      .then(resolve)
-      .catch(reject);
+      this.request(Command.ReadState, Buffer.alloc(0))
+        .then(resp => ({
+          adsState: resp.data.readUInt16LE(0),
+          deviceState: resp.data.readUInt16LE(2),
+        }))
+        .then(resp => {
+          this.connection.deviceState = resp;
+          return resp;
+        })
+        .then(resolve)
+        .catch(reject);
+    } catch (err) {
+      reject(err);
+    }
   })
 
   private connectHandler = async () => {
@@ -652,7 +720,7 @@ export default class Client {
     const { data } = packet;
 
     if (!data) {
-      throw new Error('no data was supplied');
+      throw new Error('notificationHandler: no data was supplied');
     }
 
     const stamps = data.readUInt32LE(0);
@@ -740,7 +808,7 @@ export default class Client {
     while(subItemsData.length > 0) {
       const length = subItemsData.readUInt32LE(0);
       if (!length) {
-        throw new Error('sub item length cannot be 0');
+        throw new Error('decodeDataType: sub item length cannot be 0');
       }
 
       const item = this.decodeDataType(subItemsData.slice(4, length));
@@ -860,7 +928,7 @@ export default class Client {
         if (item) {
           return this.parse(item, data.slice(item.offset, item.offset + item.size), targetTag);
         }
-        throw new Error(`could not find subItem "${subTargetTag}" of in datatype "${dt.name}"`);
+        throw new Error(`parse: could not find subItem "${subTargetTag}" of in datatype "${dt.name}"`);
       }
 
       return dt.subItems.reduce((acc: {[key: string]: any }, item) => {
@@ -874,13 +942,13 @@ export default class Client {
 
   private parseArray = (tag: SymbolData | DataType, data: Buffer, dimentions: Array<ArrayDimention>): any => {
 		if (!dimentions) {
-			throw new Error('invalid array dimention');
+			throw new Error('parse: invalid array dimention');
 		}
 
     const { start, length } = dimentions.pop() || { start: 0 };
 
 		if (!length) {
-			throw new Error('invalid array dimention');
+			throw new Error('parse: invalid array dimention');
 		}
 
     let ret:{ [name:string]: any } = {};
@@ -991,7 +1059,7 @@ export default class Client {
 
       case 'PVOID': // void pointer,
       case 'OTCID': // 4byte
-        throw new Error('writing datatypes PVOID and OTCID is not supported');
+        throw new Error('encode: writing datatypes PVOID and OTCID is not supported');
     }
 
     if (type.substring(0,6) === 'STRING') {
@@ -1005,11 +1073,11 @@ export default class Client {
     const dt = this.connection.dataTypes && this.connection.dataTypes[tag.type];
 
     if (!dt) {
-      throw new Error(`datatype ${dt} was not found or recogniced`);
+      throw new Error(`encode: datatype ${dt} was not found or recogniced`);
     }
 
     if (dt.arrayDimentions.length > 0) {
-      throw new Error("writing arrays are not supported yet");
+      throw new Error("encode: writing arrays are not supported yet");
       //return this.parseArray(dt, data.slice(dt.offset, dt.offset + dt.size), [...dt.arrayDimentions]);
     }
 
@@ -1023,13 +1091,13 @@ export default class Client {
           encoded.offset += tag.offset;
           return encoded;
         }
-        throw new Error(`could not find subItem "${subTargetTag}" of in datatype "${dt.name}"`);
+        throw new Error(`encode: could not find subItem "${subTargetTag}" of in datatype "${dt.name}"`);
       }
 
       const buffer = Buffer.alloc(dt.size);
       dt.subItems.forEach(item => {
         if (typeof value[item.name] === 'undefined') {
-          throw new Error(`cant write structure if not all values are defined, ${item.name} is missing in ${dt.name} (${tag.name})`);
+          throw new Error(`encode: cant write structure if not all values are defined, ${item.name} is missing in ${dt.name} (${tag.name})`);
         }
         const encoded = this.encode(item, value[item.name], targetTag);
         encoded.offset += tag.offset;
@@ -1042,6 +1110,6 @@ export default class Client {
       }
     }
 
-    throw new Error(`datatype ${dt} was not recogniced`);
+    throw new Error(`encode: datatype ${dt} was not recogniced`);
   }
 };
