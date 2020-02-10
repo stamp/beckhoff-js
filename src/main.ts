@@ -216,9 +216,6 @@ export default class Client {
 
       socket.on('connect', () => {
         this.connectHandler()
-          .then(() => {
-            this.connection.connected = true;
-          })
           .then(() => Promise.all([
               this.getDeviceInfo(),
               this.getDeviceState(),
@@ -469,17 +466,19 @@ export default class Client {
         return resolve(this.connection.notifications[tag.name].handle);
       }
 
+      const notificationHandle = {
+        handle: -1,
+        tagName: tag.targetTag || tag.name,
+        callbacks: {
+          [tag.targetTag || tag.name]: callback
+        },
+      };
+      this.connection.notifications[tag.name] = notificationHandle;
+
       const resp = await
       this.subscribe(tag.group, tag.offset, tag.size)
         .then(resp => {
-          const notificationHandle = {
-            handle: resp.data.readUInt32LE(0),
-            tagName: tag.targetTag || tag.name,
-            callbacks: {
-              [tag.targetTag || tag.name]: callback
-            },
-          };
-          this.connection.notifications[tag.name] = notificationHandle;
+          this.connection.notifications[tag.name].handle = resp.data.readUInt32LE(0);
           return this.connection.notifications[tag.name].handle;
         })
         .then(resolve)
@@ -683,6 +682,8 @@ export default class Client {
     this._commandHeader.writeUInt16LE(this.options.source.amsPort || 800, 14); // AMSPort Source
 
     debug.connection('connected to',this.options.target.host,this.options.target.port,'from', address, port);
+
+    this.connection.connected = true;
     this._emitter.emit('connect');
   }
   private dataHandler = async (data: Buffer) => {

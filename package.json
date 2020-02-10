@@ -1,6 +1,6 @@
 {
   "name": "beckhoff-js",
-  "version": "0.0.1006",
+  "version": "0.0.1008",
   "description": "This is a Promise based client implementation of the Twincat ADS protocol from Beckhoff written in TypeScript.",
   "main": "dist/main.js",
   "types": "dist/main.d.ts",
