@@ -1,8 +1,3 @@
-import Debug from 'debug';
-import { Header } from './ams';
-
-const debug = Debug('beckhoff-js:ads');
-
 export enum Command {
   ReadDeviceInfo = 0x0001,
   Read = 0x0002,
@@ -59,11 +54,6 @@ export enum AdsState {
   Stopping = 17,
   Incompatible = 18,
   Exception = 19,
-}
-
-export interface Response {
-  header: Header;
-  data: Buffer;
 }
 
 // credits to https://github.com/roccomuso/node-ads/blob/master/lib/ads.js
@@ -147,9 +137,10 @@ export const Errors: { [key: number]: string } = {
   1875: 'no more symbols in cache',
   1876: 'invalid response received',
   1877: 'sync port is locked',
-}
+};
 
 // credits to https://github.com/roccomuso/node-ads/blob/master/lib/ads.js
+// @see https://infosys.beckhoff.com/english.php?content=../content/1033/tcadsocx/html/tcadsocx_methadssyncwritecontrolreq.htm&id=
 export enum State {
   INVALID=      0,
   IDLE=         1,
@@ -174,13 +165,13 @@ export enum State {
 // credits to https://github.com/roccomuso/node-ads/blob/master/lib/ads.js
 // credits to https://github.com/tomcx/tame4/blob/master/tame.js
 export enum ADSIGRP {
-  M=                    0x4020, //PLC memory range(%M field), READ_M - WRITE_M
-  MX=                   0x4021, //PLC memory range(%MX field), READ_MX - WRITE_MX
-  DB=                   0x4040, //Data range
-  I=                    0xF020, //PLC process diagram of the physical inputs(%I field), READ_I - WRITE_I
-  IX=                   0xF021, //PLC process diagram of the physical inputs(%IX field), READ_IX - WRITE_IX
-  Q=                    0xF030, //PLC process diagram of the physical outputs(%Q field), READ_Q - WRITE_Q
-  QX=                   0xF031, //PLC process diagram of the physical outputs(%QX field), READ_QX - WRITE_QX
+  M=                    0x4020, // PLC memory range(%M field), READ_M - WRITE_M
+  MX=                   0x4021, // PLC memory range(%MX field), READ_MX - WRITE_MX
+  DB=                   0x4040, // Data range
+  I=                    0xF020, // PLC process diagram of the physical inputs(%I field), READ_I - WRITE_I
+  IX=                   0xF021, // PLC process diagram of the physical inputs(%IX field), READ_IX - WRITE_IX
+  Q=                    0xF030, // PLC process diagram of the physical outputs(%Q field), READ_Q - WRITE_Q
+  QX=                   0xF031, // PLC process diagram of the physical outputs(%QX field), READ_QX - WRITE_QX
 
   SYMTAB=               0xF000,
   SYMNAME=              0xF001,
@@ -235,9 +226,28 @@ export enum IndexGroup {
 
 };
 
-export default {
-  types: Types,
-  errors: Errors,
-  state: State,
-  ADSIGRP,
+// @see https://infosys.beckhoff.com/english.php?content=../content/1033/tcadsocx/html/tcadsocx_methadssyncwritecontrolreq.htm&id=
+// @see https://infosys.beckhoff.com/english.php?content=../content/1033/tc3_adsnetref/7312925835.html&id=1799538453650790435
+export enum ADSDataTypes {
+  BIT             = 33,
+  INT8            = 16,
+  INT16           = 2,
+  INT32           = 3,
+  INT64           = 20,
+  UINT8           = 17,
+  UINT16          = 18,
+  UINT32          = 19,
+  UINT64          = 21,
+  REAL32          = 4,
+  REAL64          = 5,
+  REAL80          = 32,
+  BIGTYPE         = 65, // blob eg. structure
+  STRING          = 30,
+  WSTRING         = 31,
+  VOID            = 0,
+};
+
+export enum ADSNotifyTransmissionMode {
+  Cyclic = 3,
+  OnChange = 4
 };
