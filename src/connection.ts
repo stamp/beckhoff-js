@@ -236,7 +236,11 @@ export class ADSConnection extends EventEmitter {
       this.reconnectTimeout = setTimeout(() => {
         this.emit('reconnect');
         this.logger('Reconnect....');
-        this.connect().catch(err => this.emit('error', err));
+        try {
+          this.connect();
+        } catch (err) {
+          this.emit('error', err);
+        }
       }, timeout);
     }
   }
