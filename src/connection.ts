@@ -68,7 +68,7 @@ export class ADSConnection extends EventEmitter {
     };
   }
 
-  public async connect() {
+  public connect() {
     this.close();
     this.socket = new Socket();
     // Disables the Nagle algorithm.

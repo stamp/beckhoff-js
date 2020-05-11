@@ -48,13 +48,14 @@ export default class Client extends EventEmitter {
       throw new Error('Already Connected. Disconnect first');
     }
     this.connection.removeAllListeners();
-    await this.connection.connect();
     this.connection.on('reconnect', () => this.emit('reconnect'));
     this.connection.on('connected', this.connectHandler.bind(this));
     this.connection.on('close', this.disconnectHandler.bind(this));
     this.connection.on('notification', this.notificationHandler.bind(this));
     this.connection.on('error', (err) => this.emit('error', err));
-    await new Promise((resolve) => this.once('connected', resolve)); // symols & datatypes pre-loaded
+    const ret = new Promise((resolve) => this.once('connected', resolve)); // symols & datatypes pre-loaded
+    this.connection.connect();
+    return ret;
   }
 
   public async read(group: number, offset: number, size: number): Promise<Response> {
