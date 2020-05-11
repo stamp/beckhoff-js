@@ -1,3 +1,4 @@
+/* eslint-disable no-case-declarations */
 import Debug from 'debug';
 import { EventEmitter } from 'events';
 import FileTime from 'win32filetime';
@@ -228,15 +229,8 @@ export default class Client extends EventEmitter {
     if (!symbol) {
       throw new Error(`Symbol not found ${systemTagName} found for tag ${tagName}`);
     }
-    const symbolDataType = Object.values(this.connectionInfo.dataTypes)
+    let symbolDataType = Object.values(this.connectionInfo.dataTypes)
       .find(s => s.name === symbol.type);
-    if (path && path.length > 0 && !symbolDataType) { // if we have a path, then we must have Structure
-      throw new Error(`Symbol data type (${symbol.type}) not found for tag ${tagName}`);
-    }
-    // @TODO: how to parse array path...
-    if (symbolDataType && symbolName.arrayDimensions.length > symbolDataType.arrayDimensions.length) {
-      throw new Error(`Array has ${symbolDataType.arrayDimensions.length} dimensions`);
-    }
     const tag: FindTag = {
       group: symbol.group,
       offset: symbol.offset,
@@ -244,47 +238,115 @@ export default class Client extends EventEmitter {
       type: symbol.type,
       dataType: symbol.dataType,
     };
-    let type: DataType | undefined = symbolDataType;
-    path.forEach(subitem => {
-      const subtype = type && type.subItems.find(s => s.name === subitem.name);
-      if (!subtype) {
-        throw new Error(`Symbol subItem ${subitem} not found form tag ${systemTagName}`);
-      }
-      // @TODO: how to parse array path...
-      tag.offset += subtype.offset;
-      tag.size = subtype.size;
-      tag.type = subtype.type;
-      tag.dataType = subtype.dataType;
-      // we may have next path subItem, may not
-      const subitemSubType = Object.values(this.connectionInfo.dataTypes || [])
-        .find(s => s.name === subtype.type);
-      if (subitemSubType) {
-        type = subitemSubType;
-      }
-    });
+    if ((symbolName.tagDimensions.length > 0 || path.length > 0) && !symbolDataType) {
+      throw new Error('Array Symbol not found');
+    }
+    if (symbolName.tagDimensions.length > 0) { // requested array member, fix offset
+      const { offset, size, type, dataType } = this.findTagArrayIndex(symbolDataType as DataType, symbolName.tagDimensions);
+      tag.offset += offset;
+      tag.size = size;
+      tag.type = type;
+      tag.dataType = dataType;
+      // replace datatype as array memeber type
+      symbolDataType = Object.values(this.connectionInfo.dataTypes)
+        .find(s => s.name === tag.type);
+    }
+    if (path.length > 0) { // requested structure, fix offset
+      const { offset, size, type, dataType } = this.parseTagPath(symbolDataType as DataType, path);
+      tag.offset += offset;
+      tag.size = size;
+      tag.type = type;
+      tag.dataType = dataType;
+    }
     return tag;
   }
 
-  // PROGRAM.VARIABLE.STRUCTUREPARAM.STRUCTURE2PARAM.STRUCTURE3PARAM
-  // PROGRAM.VARIABLE[arrayindex]
-  // PROGRAM.VARIABLE[arrayindex].STRUCTUREPARAM
-  // PROGRAM.VARIABLE[arrayindex].STRUCTUREPARAM[arrayindex].STRUCTUREPARAM
-  // .GLOBALVAR
-  // @TODO: PROGRAM.VARIABLE[arrayindex][arrayindex]
-  private parseTagName(tagName: string): { name: string, arrayDimensions: number[] }[] {
+  private parseTagPath(dataTypeObj: DataType, path: { name: string, tagDimensions: number[] }[]): { offset: number, size: number, type: string, dataType: number } {
+    let lastType = dataTypeObj;
+    let { size, offset, type, dataType } = lastType;
+    path.forEach(item => {
+      const subitem: undefined | null | DataType = lastType && lastType.subItems.find(s => s.name === item.name);
+      if (!subitem) {
+        throw new Error(`Symbol subItem ${item.name} not found form tag ${lastType.name}`);
+      }
+      // replace with correct type where we have dimensions & etc
+      offset += subitem.offset;
+      size = subitem.size;
+      type = subitem.type;
+      dataType = subitem.dataType;
+      let subitemSubType = Object.values(this.connectionInfo.dataTypes || [])
+        .find(s => subitem && s.name === subitem.type);
+      if (item.tagDimensions.length > 0) { // requested structure, fix offset
+        if (!subitemSubType) {
+          throw new Error(`Array Type not found for ${item.name}`);
+        }
+        const array = this.findTagArrayIndex(subitemSubType, item.tagDimensions);
+        offset += array.offset;
+        size = array.size;
+        type = array.type;
+        dataType = array.dataType;
+        // replace datatype as array memeber
+        subitemSubType = Object.values(this.connectionInfo.dataTypes || [])
+          .find(s => s.name === array.type);
+      }
+      if (subitemSubType) {
+        lastType = subitemSubType;
+      }
+    });
+    return { size, offset, type, dataType };
+  }
+
+  private findTagArrayIndex (dataType: DataType, tagDimensions: number[]): { offset: number, size: number, type: string, dataType: number } {
+    const { arrayDimensions, type } = dataType;
+    const dt = this.connectionInfo.dataTypes && this.connectionInfo.dataTypes[type];
+    if (!dt) {
+      throw new Error(`Array datatype ${dataType.type} not found`);
+    }
+    if (!arrayDimensions) {
+      throw new Error('encodeArray: invalid array dimention');
+    }
+    if (tagDimensions.length > arrayDimensions.length) {
+      throw new Error(`Array datatype ${dataType.type} has ${arrayDimensions.length} dimensions, requested dimension ${tagDimensions.length}`);
+    }
+    let { size, offset } = dataType;
+    tagDimensions.forEach((requestedIndex, index) => {
+      const { length, start } = arrayDimensions[arrayDimensions.length -1 - index];
+      if (requestedIndex > length || requestedIndex < start) {
+        throw new Error(`Array ${dataType.name} requested index ${requestedIndex} out of bounds ${start}...${length}`);
+      }
+      size /= length;
+      offset += (size * (requestedIndex - start));
+    });
+    return { offset, size, type: dt.name, dataType: dt.dataType };
+  }
+
+  /**
+   *
+   * @param tagName Tag name to parse,
+   *  eg. PROGRAM.VARIABLE[arrayindex][arrayindex], PROGRAM.VARIABLE[arrayindex].STRUCTUREPARAM[arrayindex].STRUCTUREPARAM,
+   *  PROGRAM.VARIABLE.STRUCTUREPARAM or .GLOBALVAR
+   */
+  private parseTagName(tagName: string): { name: string, tagDimensions: number[] }[] {
     return tagName
       .split('.')
-      .map(part => {
-        let name = part.toUpperCase();
-        let arrayDimensions: number[] = [];
-        const isArray = /(\[\d+\])/ig.exec(part); // TODO: matchAll for multi dimensions
-        if (isArray) {
-          // arrayDimensions = isArray.map(index => parseInt(index.replace(/\[/, '').replace(/\]/, ''), 10));
-          arrayDimensions = [parseInt(isArray[0].replace(/\[/, '').replace(/\]/, ''), 10)];
-          [ name ] = part.split('[');
-        }
-        return { name, arrayDimensions };
-      });
+      .map(part => this.parseTagNamePart(part));
+  }
+
+  /**
+   *
+   * @param tagNamePart tag name part to parse eg. variable[arrayindex][arrayindex][1+n]
+   */
+  private parseTagNamePart(tagNamePart: string): { name: string, tagDimensions: number[] } {
+    const [ name, ...dimensions ] = tagNamePart.toUpperCase().split('[');
+    const tagDimensions = dimensions.map(dimension => {
+      const indexString = dimension.replace(']', '');
+      const index = parseInt(indexString, 10);
+      if (Number.isNaN(index)) {
+        throw new Error(`Invalid Array Index ${indexString} for ${tagNamePart}`);
+      }
+      return index;
+    });
+    return { name, tagDimensions };
   }
 
   private async connectHandler() {
@@ -480,9 +542,13 @@ export default class Client extends EventEmitter {
       throw new Error('Datatype VOID cannot be written');
     case ADSDataTypes.STRING:
     case ADSDataTypes.WSTRING:
-      return Buffer.from(value, 'latin1');
+      if (tag.size) {
+        const buf = Buffer.alloc(tag.size);
+        buf.write(value.toString(), 'latin1');
+        return buf;
+      }
+      return Buffer.from(value.toString(), 'latin1');
     case ADSDataTypes.BIGTYPE: // BLOB (eg. Structure / Array / time)
-      // eslint-disable-next-line no-case-declarations
       const dt = this.connectionInfo.dataTypes && this.connectionInfo.dataTypes[tag.type];
       if (tag.type === 'DATE' || tag.type === 'DT' || tag.type === 'DATE_AND_TIME') {
         // timestamp stored in seconds
@@ -576,11 +642,9 @@ export default class Client extends EventEmitter {
       return data.readUInt32LE(0);
     case ADSDataTypes.STRING:
     case ADSDataTypes.WSTRING:
-      // eslint-disable-next-line no-case-declarations
       const str = data.toString('latin1', 0, tag.size);
       return str.substring(0, str.indexOf('\x00'));
     case ADSDataTypes.BIGTYPE: // BLOB (eg. Structure / Array / TIME)
-      // eslint-disable-next-line no-case-declarations
       const dt = this.connectionInfo.dataTypes && this.connectionInfo.dataTypes[tag.type];
       if (tag.type === 'DATE' || tag.type === 'DT' || tag.type === 'DATE_AND_TIME') {
         // timestamp stored in seconds
