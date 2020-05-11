@@ -416,7 +416,7 @@ export default class Client extends EventEmitter {
           continue;
         }
         this.findTag(notificationHandle.tagName)
-          .then((tag) => this.parseData(tag, sample))
+          .then(tag => this.parseData(tag, sample))
           .then(value => {
             notificationHandle.callbacks.forEach((cb) => cb(value, timestamp));
           })
