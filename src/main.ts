@@ -356,14 +356,12 @@ export default class Client extends EventEmitter {
   }
 
   private async connectHandler() {
-    // @TODO: verify notification handles exists on a device, if not, re-subscribe (ADS Add Device Notification)
-    // for example if PLC or TwinCat is rebooted, it will destroy all Notification handles
-    // but if connection is interrupted for some other reason, handles are kept
-    // in this case if you keep subscribing too many notfication handles you will end up running out of memory
-    // also in some cases on some Beckhoff PLC's if same Source adds two same group/offset/size handles, notifications are not sent
-    // Beckhoff recommends to use max 550 notification handles
     this.connectionInfo.connected = true;
     try {
+      // resubscribe all notification handles that we had before new (re)connection
+      // because for example if PLC or TwinCat is rebooted, it will destroy all Notification handles
+      // also values may have changed meanwhile
+      await this.resubscribeNotificationHandles();
       if (this.options.loadSymbols === true && !this.connectionInfo.symbols) {
         this.connectionInfo.symbols = await this.getSymbols();
       }
@@ -374,6 +372,23 @@ export default class Client extends EventEmitter {
       this.emit('error', err);
     }
     this.emit('connected');
+  }
+
+  private async resubscribeNotificationHandles() {
+    await Promise.all(Object.values(this.connectionInfo.notifications).map(
+      (notificationHandle) => this.unsubscribe(notificationHandle.handle)
+        .catch(err => this.emit('error', err))
+    ));
+    await Promise.all(Object.values(this.connectionInfo.notifications).map(
+      async (notificationHandle) => {
+        const tag = await this.findTag(notificationHandle.tagName);
+        return this.subscribe(tag.group, tag.offset, tag.size)
+          .then(({ data }) => {
+            this.connectionInfo.notifications[notificationHandle.tagName].handle = data.readUInt32LE(0);
+          })
+          .catch(err => this.emit('error', err));
+      }
+    ));
   }
 
   private async disconnectHandler(hadError: boolean) {
