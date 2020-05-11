@@ -404,6 +404,7 @@ export default class Client extends EventEmitter {
       const timestampLow = buffer.readUInt32LE(0);
       const timestampHigh = buffer.readUInt32LE(4);
       const samples = buffer.readUInt32LE(8);
+      const timestamp = FileTime.toDate(timestampLow,timestampHigh);
       buffer = buffer.slice(12);
       for (let sampleNumber=0; sampleNumber < samples; sampleNumber+=1) {
         const handle = buffer.readUInt32LE(0);
@@ -415,12 +416,8 @@ export default class Client extends EventEmitter {
           continue;
         }
         this.findTag(notificationHandle.tagName)
-          .then(async (tag) => {
-            const timestamp = FileTime.toDate(timestampLow,timestampHigh);
-            const value = await this.parseData(tag, sample);
-            return { value, timestamp };
-          })
-          .then(({ value, timestamp }) => {
+          .then((tag) => this.parseData(tag, sample))
+          .then(value => {
             notificationHandle.callbacks.forEach((cb) => cb(value, timestamp));
           })
           .catch(err => {
