@@ -45,10 +45,10 @@ export default class Client extends EventEmitter {
 
   public async connect() {
     if (this.connectionInfo.connected) {
-      throw new Error('Already Connected');
+      throw new Error('Already Connected. Disconnect first');
     }
     this.connection.removeAllListeners();
-    this.connection.connect();
+    await this.connection.connect();
     this.connection.on('reconnect', () => this.emit('reconnect'));
     this.connection.on('connected', this.connectHandler.bind(this));
     this.connection.on('close', this.disconnectHandler.bind(this));
@@ -207,12 +207,18 @@ export default class Client extends EventEmitter {
       });
   }
 
+  /**
+   * Disconnects and removes all notificatio handles
+   */
   public async close() {
-    await Promise.all(Object.values(this.connectionInfo.notifications).map(
-      notificationHandle => this.unsubscribe(notificationHandle.handle)
-    ));
+    if (this.connectionInfo.connected) {
+      await Promise.all(Object.values(this.connectionInfo.notifications).map(
+        notificationHandle => this.unsubscribe(notificationHandle.handle)
+          .catch(err => this.emit('error', err))
+      ));
+    }
     this.connection.removeAllListeners();
-    await this.connection.close();
+    this.connection.close();
   }
 
   public async findTag(tagName: string): Promise<FindTag> {
@@ -362,7 +368,6 @@ export default class Client extends EventEmitter {
       this.emit('error', err);
     }
     this.emit('connected');
-    // @IDEA: needs to be tested, do we need to (re)subscibe notifications?
   }
 
   private async disconnectHandler(hadError: boolean) {
@@ -406,9 +411,9 @@ export default class Client extends EventEmitter {
 
   private async subscribe(group: number, offset: number, size: number, options?: NotifyOptions): Promise<Response> {
     // At the latest after this time, the ADS Device Notification is called. The unit is 1ms.
-    const maxDelay = options && options.maxDelay? options.maxDelay : 10;
+    const maxDelay = options && options.maxDelay? options.maxDelay : 200;
     // The ADS server checks if the value changes in this time slice. The unit is 1m
-    const cycleTime = options && options.cycleTime? options.cycleTime : 10;
+    const cycleTime = options && options.cycleTime? options.cycleTime : 50;
     const TransmissionMode = options && options.transmissionMode?
       options.transmissionMode : ADSNotifyTransmissionMode.OnChange;
     this.logger(`ADS addDeviceNotification: g${group}, o${offset}, s${size}, maxDelay ${maxDelay}, cycleTime ${cycleTime} TransmissionMode ${TransmissionMode}`);

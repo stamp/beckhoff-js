@@ -10,7 +10,7 @@ export * from './ads';
 export { Response } from './ams';
 // @see https://infosys.beckhoff.com/english.php?content=../content/1033/tcadsamsspec/html/tcadsamsspec_amsheader.htm&id=
 export const MAX_SAFE_INVOKEID = 2 ** 32 - 1; // 32bit => 4 bytes
-export const REQUEST_TIMEOUT = 30000;
+export const REQUEST_TIMEOUT = 3000;
 
 export class ADSConnection extends EventEmitter {
   private readonly logger = Debug('beckhoff-js:connection');
@@ -69,20 +69,20 @@ export class ADSConnection extends EventEmitter {
   }
 
   public async connect() {
-    await this.close();
+    this.close();
     this.socket = new Socket();
     // Disables the Nagle algorithm.
     // By default TCP connections use the Nagle algorithm, they buffer data before sending it off.
     // Setting true for noDelay will immediately fire off data each time socket.write() is called.
     this.socket.setNoDelay(true);
+    this.socket.setKeepAlive(true, REQUEST_TIMEOUT);
     const { port, host } = this.options.target;
     this.logger(`Opening connection to ${host}:${port}`);
-    this.socket.connect(port || 48898, host);
     this.socket.on('connect', this.connectHandler.bind(this));
     this.socket.on('data', this.dataHandler.bind(this));
-    this.socket.on('timeout', this.timeoutHandler.bind(this));
     this.socket.on('error', this.errorHandler.bind(this));
     this.socket.on('close', this.closeHandler.bind(this));
+    this.socket.connect(port || 48898, host);
   }
 
   public async request(command: Command, data: Buffer): Promise<Response> {
@@ -146,15 +146,11 @@ export class ADSConnection extends EventEmitter {
     return this.socket && this.socket.connecting;
   }
 
-  public async close (): Promise<void> {
-    return new Promise(resolve => {
-      if (this.socket) {
-        this.socket.removeAllListeners();
-        this.socket.end(resolve);
-      } else {
-        resolve();
-      }
-    });
+  public async close () {
+    if (this.socket) {
+      this.socket.removeAllListeners();
+      this.socket.end();
+    }
   }
 
   private async connectHandler () {
@@ -217,14 +213,6 @@ export class ADSConnection extends EventEmitter {
       });
     } catch (err) {
       this.emit('err', err);
-    }
-  }
-
-  private async timeoutHandler () {
-    // The user must manually close the connection.
-    this.logger('Connection timeout');
-    if (this.socket) {
-      this.socket.end();
     }
   }
 
