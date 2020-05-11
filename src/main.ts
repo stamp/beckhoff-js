@@ -356,6 +356,12 @@ export default class Client extends EventEmitter {
   }
 
   private async connectHandler() {
+    // @TODO: verify notification handles exists on a device, if not, re-subscribe (ADS Add Device Notification)
+    // for example if PLC or TwinCat is rebooted, it will destroy all Notification handles
+    // but if connection is interrupted for some other reason, handles are kept
+    // in this case if you keep subscribing too many notfication handles you will end up running out of memory
+    // also in some cases on some Beckhoff PLC's if same Source adds two same group/offset/size handles, notifications are not sent
+    // Beckhoff recommends to use max 550 notification handles
     this.connectionInfo.connected = true;
     try {
       if (this.options.loadSymbols === true && !this.connectionInfo.symbols) {
