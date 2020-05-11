@@ -46,7 +46,6 @@ export default class Client extends EventEmitter {
     if (this.connectionInfo.connected) {
       throw new Error('Already Connected');
     }
-    // @TODO: if starts with failures...?
     this.connection.removeAllListeners();
     this.connection.connect();
     this.connection.on('reconnect', () => this.emit('reconnect'));
@@ -54,33 +53,10 @@ export default class Client extends EventEmitter {
     this.connection.on('close', this.disconnectHandler.bind(this));
     this.connection.on('notification', this.notificationHandler.bind(this));
     this.connection.on('error', (err) => this.emit('error', err));
-    await new Promise((resolve, reject) => {
-      const handler = (async (err?: Error) => {
-        this.connection.removeListener('connected', handler);
-        this.connection.removeListener('error', handler);
-        try {
-          if (err) {
-            throw err;
-          }
-          if (this.options.loadSymbols === true && !this.connectionInfo.symbols) {
-            this.connectionInfo.symbols = await this.getSymbols();
-          }
-          if (this.options.loadDataTypes === true && !this.connectionInfo.dataTypes) {
-            this.connectionInfo.dataTypes = await this.getDataTypes();
-          }
-          return resolve();
-        } catch (error) {
-          this.connection.removeAllListeners();
-          this.connection.close();
-          return reject(error);
-        }
-      });
-      this.connection.once('connected', handler);
-      this.connection.once('error', handler);
-    });
+    await new Promise((resolve) => this.once('connected', resolve)); // symols & datatypes pre-loaded
   }
 
-  public async read (group: number, offset: number, size: number): Promise<Response> {
+  public async read(group: number, offset: number, size: number): Promise<Response> {
     this.logger(`ADS read: ${group}, ${offset}, ${size}`);
     const data = Buffer.allocUnsafe(12);
     data.writeUInt32LE(group, 0);
@@ -171,22 +147,26 @@ export default class Client extends EventEmitter {
     };
   }
 
-  public async readTag (tagName: string): Promise<any> {
+  public async readTag(tagName: string): Promise<any> {
     this.logger(`Read Tag ${tagName}`);
     const tag = await this.findTag(tagName);
     return this.read(tag.group, tag.offset, tag.size)
       .then(resp => this.parseData(tag, resp.data));
   }
 
-  public async writeTag (tagName: string, value: any): Promise<Response> {
+  public async writeTag(tagName: string, value: any): Promise<Response> {
     this.logger(`Write Tag ${tagName} value ${value}`);
     const tag = await this.findTag(tagName);
     const encoded = this.encodeData(tag, value);
     return this.write(tag.group, tag.offset, tag.size, encoded);
   }
 
-  public async monitorTag (tagName: string, callback: (value: any) => void): Promise<number> {
+  public async monitorTag(tagName: string, callback: (value: any) => void): Promise<number> {
     this.logger(`Monitor Tag ${tagName}`);
+    // @see https://infosys.beckhoff.com/english.php?content=../content/1033/tcadsamsspec/html/tcadsamsspec_adscmd_adddevicenotification.htm&id=
+    if (Object.keys(this.connectionInfo.notifications).length >= 550) {
+      throw new Error('Maximum 550 notification handles allowed');
+    }
     const tag = await this.findTag(tagName);
     if (this.connectionInfo.notifications[tagName]) {
       this.connectionInfo.notifications[tagName].callbacks.push(callback);
@@ -197,7 +177,7 @@ export default class Client extends EventEmitter {
       tagName,
       callbacks: [callback]
     };
-    // IDEA: const notifyOptions: notifyOptions = {}
+    // @IDEA: const notifyOptions: notifyOptions = {}
     this.connectionInfo.notifications[tagName] = notificationHandle;
     return this.subscribe(tag.group, tag.offset, tag.size)
       .then(resp => {
@@ -231,7 +211,7 @@ export default class Client extends EventEmitter {
       notificationHandle => this.unsubscribe(notificationHandle.handle)
     ));
     this.connection.removeAllListeners();
-    this.connection.close();
+    await this.connection.close();
   }
 
   public async findTag(tagName: string): Promise<FindTag> {
@@ -309,8 +289,18 @@ export default class Client extends EventEmitter {
 
   private async connectHandler() {
     this.connectionInfo.connected = true;
+    try {
+      if (this.options.loadSymbols === true && !this.connectionInfo.symbols) {
+        this.connectionInfo.symbols = await this.getSymbols();
+      }
+      if (this.options.loadDataTypes === true && !this.connectionInfo.dataTypes) {
+        this.connectionInfo.dataTypes = await this.getDataTypes();
+      }
+    } catch (err) {
+      this.emit('error', err);
+    }
     this.emit('connected');
-    // (re)subscibe notifications?
+    // @IDEA: needs to be tested, do we need to (re)subscibe notifications?
   }
 
   private async disconnectHandler(hadError: boolean) {
@@ -451,7 +441,7 @@ export default class Client extends EventEmitter {
     };
   }
 
-  private encodeData(tag: FindTag, value: any): Buffer {
+  private encodeData(tag: { dataType: number, size: number, type: string, offset: number }, value: any): Buffer {
     const buffer = Buffer.alloc(8);
     switch(tag.dataType) {
     case ADSDataTypes.BIT:
@@ -503,9 +493,9 @@ export default class Client extends EventEmitter {
         buffer.writeUInt32LE(+new Date(`1970 ${value}`), 0);
         return buffer.slice(0,4);
       } if (dt && dt.arrayDimensions.length === 0) { // Existing Structure
-        throw new Error('Structure write not implemented');
+        return this.encodeStructure(dt, value);
       } if (dt && dt.arrayDimensions.length > 0) {
-        throw new Error('Array write not implemented yet');
+        return this.encodeArray(dt, value);
       }
       throw new Error(`Datatype ${tag.type} not implemented`);
     default:
@@ -513,8 +503,49 @@ export default class Client extends EventEmitter {
     }
   }
 
-  private encodeStructure(dataType: DataType, value: any): any {
+  private encodeStructure(dataType: DataType, value: any): Buffer {
+    if (!value || typeof value !== 'object' || dataType.subItems.length !== Object.keys(value).length) {
+      throw new Error(`Provided Object size<${Object.keys(value).length}> does not match with stucture ${dataType.name}<${dataType.subItems.length}>`);
+    }
+    const buffer = Buffer.alloc(dataType.size);
+    dataType.subItems.forEach(item => {
+      if (typeof value[item.name] === 'undefined') {
+        throw new Error(`Can't write structure if not all values are defined, ${item.name} is missing from provided Object`);
+      }
+      const encoded = this.encodeData(item, value[item.name]);
+      encoded.copy(buffer, item.offset);
+    });
+    return buffer;
+  }
 
+  private encodeArray(dataType: DataType, values: any, dimension?: number): Buffer {
+    const { arrayDimensions } = dataType;
+    if (!arrayDimensions) {
+      throw new Error('encodeArray: invalid array dimention');
+    }
+    if (!Array.isArray(values)) {
+      throw new Error('Array expected');
+    }
+    const currentDimension = dimension || (arrayDimensions.length - 1);
+    if (!arrayDimensions[currentDimension]) {
+      throw new Error('encodeArray: invalid array dimention len');
+    }
+    const { length } = arrayDimensions[currentDimension];
+    const slice = dataType.size / length;
+    // NodeJS Arrays allways start from '0',
+    // but we have undefined type, so we skip undefined rows
+    const array = values.filter(val => typeof val !== 'undefined');
+    if (length !== array.length) {
+      throw new Error(`Invaid datatype ${dataType.name}<${dataType.size}> for Array <${values.length}>`);
+    }
+    const buffer = Buffer.alloc(dataType.size);
+    array.forEach((item, index) => {
+      const encoded = Array.isArray(item) ?
+        this.encodeArray(dataType, item, (currentDimension-1)) :
+        this.encodeData(dataType, item);
+      encoded.copy(buffer, index * slice);
+    });
+    return buffer;
   }
 
   private parseData(tag: { dataType: number, size: number, type: string, offset: number }, data: Buffer): any {
@@ -603,7 +634,7 @@ export default class Client extends EventEmitter {
     }
     const { start, length } = arrayDimensions[currentDimension];
     const ret: any[] = new Array(start + length);
-    const slice = data.length / length;
+    const slice = dataType.size / length;
     for (let i = 0; i < length; i+=1) {
       ret[i+start] = currentDimension > 0 ?
         this.parseArray(dataType, data.slice(i*slice, (i+1)*slice), (currentDimension-1)) :
