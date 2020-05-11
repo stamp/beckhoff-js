@@ -359,16 +359,16 @@ export default class Client extends EventEmitter {
   private async connectHandler() {
     this.connectionInfo.connected = true;
     try {
-      // resubscribe all notification handles that we had before new (re)connection
-      // because for example if PLC or TwinCat is rebooted, it will destroy all Notification handles
-      // also values may have changed meanwhile
-      await this.resubscribeNotificationHandles();
       if (this.options.loadSymbols === true && !this.connectionInfo.symbols) {
         this.connectionInfo.symbols = await this.getSymbols();
       }
       if (this.options.loadDataTypes === true && !this.connectionInfo.dataTypes) {
         this.connectionInfo.dataTypes = await this.getDataTypes();
       }
+      // resubscribe all notification handles that we had before new (re)connection
+      // because for example if PLC or TwinCat is rebooted, it will destroy all Notification handles
+      // also values may have changed meanwhile
+      await this.resubscribeNotificationHandles();
     } catch (err) {
       this.emit('error', err);
     }
