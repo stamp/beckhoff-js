@@ -162,7 +162,7 @@ export default class Client extends EventEmitter {
     return this.write(tag.group, tag.offset, tag.size, encoded);
   }
 
-  public async monitorTag(tagName: string, callback: (value: any, timestamp: number) => void): Promise<number> {
+  public async monitorTag(tagName: string, callback: (value: any) => void): Promise<number> {
     this.logger(`Monitor Tag ${tagName}`);
     // @see https://infosys.beckhoff.com/english.php?content=../content/1033/tcadsamsspec/html/tcadsamsspec_adscmd_adddevicenotification.htm&id=
     if (Object.keys(this.connectionInfo.notifications).length >= 550) {
