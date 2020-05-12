@@ -127,6 +127,7 @@ await client
 
 This library supports `Arrays`. ST Arrays may have different starting point, Nodejs Arrays startng point is allways 0.
 If Array starting point is different, all members before that are `undefined` (`<empty item>`).
+Multi dimensional arrays are supported. MultiArray is not supported yet.
 eg.
 
 ```javascript
