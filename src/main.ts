@@ -304,15 +304,13 @@ export default class Client extends EventEmitter {
   }
 
   private findTagArrayIndex (dataType: DataType, tagDimensions: number[]): { offset: number, size: number, type: string, dataType: number } {
-    const { arrayDimensions, type } = dataType;
-    const dt = this.connectionInfo.dataTypes && this.connectionInfo.dataTypes[type];
-    if (!dt) {
-      throw new Error(`Array datatype ${dataType.type} not found`);
-    }
+    // @TODO: https://infosys.beckhoff.com/english.php?content=../content/1033/tf3600_tc3_condition_monitoring/9007200417247883.html&id=
+    // multyDimensional Array is supported, but MultiArray is not supported yet.
+    const { arrayDimensions } = dataType;
     if (!arrayDimensions) {
       throw new Error('encodeArray: invalid array dimention');
     }
-    if (tagDimensions.length > arrayDimensions.length) {
+    if (tagDimensions.length !== arrayDimensions.length) {
       throw new Error(`Array datatype ${dataType.type} has ${arrayDimensions.length} dimensions, requested dimension ${tagDimensions.length}`);
     }
     let { size, offset } = dataType;
@@ -324,7 +322,7 @@ export default class Client extends EventEmitter {
       size /= length;
       offset += (size * (requestedIndex - start));
     });
-    return { offset, size, type: dt.name, dataType: dt.dataType };
+    return { offset, size, type: dataType.type, dataType: dataType.dataType };
   }
 
   /**
@@ -528,6 +526,10 @@ export default class Client extends EventEmitter {
   }
 
   private encodeData(tag: { dataType: number, size: number, type: string, offset: number }, value: any): Buffer {
+    const dt = this.connectionInfo.dataTypes && this.connectionInfo.dataTypes[tag.type];
+    if (dt && dt.arrayDimensions.length > 0) {
+      return this.encodeArray(dt, value);
+    }
     const buffer = Buffer.alloc(8);
     switch(tag.dataType) {
     case ADSDataTypes.BIT:
@@ -573,7 +575,6 @@ export default class Client extends EventEmitter {
       }
       return Buffer.from(value.toString(), 'latin1');
     case ADSDataTypes.BIGTYPE: // BLOB (eg. Structure / Array / time)
-      const dt = this.connectionInfo.dataTypes && this.connectionInfo.dataTypes[tag.type];
       if (tag.type === 'DATE' || tag.type === 'DT' || tag.type === 'DATE_AND_TIME') {
         // timestamp stored in seconds
         buffer.writeUInt32LE(+new Date(value)/1000, 0);
@@ -584,8 +585,6 @@ export default class Client extends EventEmitter {
         return buffer.slice(0,4);
       } if (dt && dt.arrayDimensions.length === 0) { // Existing Structure
         return this.encodeStructure(dt, value);
-      } if (dt && dt.arrayDimensions.length > 0) {
-        return this.encodeArray(dt, value);
       }
       throw new Error(`Datatype ${tag.type} not implemented`);
     default:
@@ -610,13 +609,13 @@ export default class Client extends EventEmitter {
 
   private encodeArray(dataType: DataType, values: any, dimension?: number): Buffer {
     const { arrayDimensions } = dataType;
-    if (!arrayDimensions) {
-      throw new Error('encodeArray: invalid array dimention');
+    if (!arrayDimensions || !Array.isArray(arrayDimensions) || arrayDimensions.length === 0) {
+      throw new Error('parseArray: invalid array dimention');
     }
     if (!Array.isArray(values)) {
       throw new Error('Array expected');
     }
-    const currentDimension = dimension || (arrayDimensions.length - 1);
+    const currentDimension = typeof dimension === 'number' ? dimension : (arrayDimensions.length - 1);
     if (!arrayDimensions[currentDimension]) {
       throw new Error('encodeArray: invalid array dimention len');
     }
@@ -631,7 +630,7 @@ export default class Client extends EventEmitter {
     const buffer = Buffer.alloc(dataType.size);
     array.forEach((item, index) => {
       const encoded = Array.isArray(item) ?
-        this.encodeArray(dataType, item, (currentDimension-1)) :
+        this.encodeArray({ ...dataType, size: slice }, item, (currentDimension-1)) :
         this.encodeData(dataType, item);
       encoded.copy(buffer, index * slice);
     });
@@ -639,6 +638,10 @@ export default class Client extends EventEmitter {
   }
 
   private parseData(tag: { dataType: number, size: number, type: string, offset: number }, data: Buffer): any {
+    const dt = this.connectionInfo.dataTypes && this.connectionInfo.dataTypes[tag.type];
+    if (dt && dt.arrayDimensions.length > 0) {
+      return this.parseArray(dt, data.slice(dt.offset, dt.offset + dt.size));
+    }
     switch(tag.dataType) {
     case ADSDataTypes.BIT:
       return data.readUInt8(0) > 0;
@@ -669,7 +672,6 @@ export default class Client extends EventEmitter {
       const str = data.toString('latin1', 0, tag.size);
       return str.substring(0, str.indexOf('\x00'));
     case ADSDataTypes.BIGTYPE: // BLOB (eg. Structure / Array / TIME)
-      const dt = this.connectionInfo.dataTypes && this.connectionInfo.dataTypes[tag.type];
       if (tag.type === 'DATE' || tag.type === 'DT' || tag.type === 'DATE_AND_TIME') {
         // timestamp stored in seconds
         return new Date(data.readUInt32LE(0) * 1000);
@@ -679,8 +681,6 @@ export default class Client extends EventEmitter {
         return `${(`0${time.getHours()}`).slice(-2)}:${(`0${time.getMinutes()}`).slice(-2)}`;
       } if (dt && dt.arrayDimensions.length === 0) { // Existing Structure
         return this.parseStructure(dt, data);
-      } if (dt && dt.arrayDimensions.length > 0) {
-        return this.parseArray(dt, data.slice(dt.offset, dt.offset + dt.size));
       }
       return data; // return Buffer for unknown BLOB type
     default:
@@ -711,12 +711,12 @@ export default class Client extends EventEmitter {
   private parseArray(dataType: DataType, data: Buffer, dimension?: number): any[] {
     const { arrayDimensions } = dataType;
     if (data.length !== dataType.size) {
-      throw new Error(`Invaid datatype ${dataType.name}<${dataType.size}> for buffer Buffer<${data.length}>`);
+      throw new Error(`Invalid datatype ${dataType.name}<${dataType.size}> for buffer Buffer<${data.length}>`);
     }
-    if (!arrayDimensions) {
+    if (!arrayDimensions || !Array.isArray(arrayDimensions) || arrayDimensions.length === 0) {
       throw new Error('parseArray: invalid array dimention');
     }
-    const currentDimension = dimension || (arrayDimensions.length - 1);
+    const currentDimension = typeof dimension === 'number' ? dimension : (arrayDimensions.length - 1);
     if (!arrayDimensions[currentDimension]) {
       throw new Error('parseArray: invalid array dimention len');
     }
@@ -725,7 +725,7 @@ export default class Client extends EventEmitter {
     const slice = dataType.size / length;
     for (let i = 0; i < length; i+=1) {
       ret[i+start] = currentDimension > 0 ?
-        this.parseArray(dataType, data.slice(i*slice, (i+1)*slice), (currentDimension-1)) :
+        this.parseArray({ ...dataType, size: slice }, data.slice(i*slice, (i+1)*slice), (currentDimension-1)) :
         this.parseData(dataType, data.slice(i*slice, (i+1)*slice));
     }
     return ret;
