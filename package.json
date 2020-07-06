@@ -1,6 +1,6 @@
 {
   "name": "beckhoff-js",
-  "version": "0.0.1008",
+  "version": "0.1.0",
   "description": "This is a Promise based client implementation of the Twincat ADS protocol from Beckhoff written in TypeScript.",
   "main": "dist/main.js",
   "types": "dist/main.d.ts",
@@ -10,7 +10,8 @@
     "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
     "pretest": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
     "tsc": "tsc",
-    "dev": "tsc --watch --pretty"
+    "dev": "tsc --watch --pretty",
+    "prepublishOnly": "tsc"
   },
   "repository": {
     "type": "git",
@@ -24,6 +25,9 @@
     "ads"
   ],
   "author": "Jonathan Grimmtjärn",
+  "contributors": [
+    "Reijo Sirila (https://github.com/reijosirila)"
+  ],
   "licenses": [
     {
       "type": "Apache-2.0"

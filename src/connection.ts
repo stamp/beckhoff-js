@@ -87,7 +87,7 @@ export class ADSConnection extends EventEmitter {
 
   public async request(command: Command, data: Buffer): Promise<Response> {
     if (!this.connected) {
-      throw new Error('Not Connected');
+      throw new Error('Not connected');
     }
     if (this.invokeID >= MAX_SAFE_INVOKEID) {
       this.invokeID = 1;
@@ -115,12 +115,25 @@ export class ADSConnection extends EventEmitter {
     return new Promise((resolve, reject) => {
       let timeout: NodeJS.Timeout;
       if (!this.socket) {
-        return reject(new Error('Not Connected'));
+        return reject(new Error('Not connected'));
       }
       this.logger(`Waiting for request "${reqId}" response..`);
-      this.requests.once(reqId, (resp: Response) => {
-        this.logger(`Request "${reqId}" response received`);
+
+      const disconnected = () => {
+        this.requests.removeAllListeners(reqId);
+        return reject(new Error('Disconnected'));
+      };
+
+      const cleanup = () => {
+        this.requests.removeAllListeners(reqId);
+        this.removeListener('close', disconnected);
         clearTimeout(timeout);
+      };
+
+      this.once('close', disconnected);
+      this.requests.once(reqId, (resp: Response) => {
+        cleanup();
+        this.logger(`Request "${reqId}" response received`);
         // Check if the response we got contained an error code
         if (resp.header.errorCode) {
           this.logger('Request: received ads error ', resp.header.errorCode);
@@ -129,10 +142,15 @@ export class ADSConnection extends EventEmitter {
         // else everything went fine and we can resolve the promise
         return resolve(resp);
       });
+
       timeout = setTimeout(() => {
-        this.requests.removeAllListeners(reqId);
-        reject(new Error('Request timeout'));
+        cleanup();
+        if (!this.socket) {
+          return reject(new Error('Not connected'));
+        }
+        return reject(new Error('Request timeout'));
       }, REQUEST_TIMEOUT);
+
       this.logger('Send Request: ', packet, packet.length);
       return this.socket.write(packet);
     });
@@ -156,7 +174,7 @@ export class ADSConnection extends EventEmitter {
   private async connectHandler () {
     try {
       if (!this.socket) {
-        throw new Error('Not Connected');
+        throw new Error('Not connected');
       }
       const { port, address } = this.socket.address() as AddressInfo;
       if (!this.options.source.netID) {
