@@ -54,7 +54,7 @@ export default class Client extends EventEmitter {
     if (this.connected) {
       throw new Error('Already connected. Disconnect first');
     }
-    if (this.connection.isConnecting()) {
+    if (this.connecting) {
       throw new Error('Already connecting. Disconnect first');
     }
     this.connection.removeAllListeners();
