@@ -157,21 +157,21 @@ export class ADSConnection extends EventEmitter {
   }
 
   public isConnected() {
-    return this.socket && this.connected;
+    return !!(this.socket && this.connected);
   }
 
   public isConnecting() {
-    return this.socket && this.socket.connecting;
+    return !!(this.socket && this.socket.connecting);
   }
 
-  public async close () {
+  public async close() {
     if (this.socket) {
       this.socket.removeAllListeners();
       this.socket.end();
     }
   }
 
-  private async connectHandler () {
+  private async connectHandler() {
     try {
       if (!this.socket) {
         throw new Error('Not connected');
@@ -200,7 +200,7 @@ export class ADSConnection extends EventEmitter {
     }
   }
 
-  private async dataHandler (data: Buffer) {
+  private async dataHandler(data: Buffer) {
     this.logger(`Received (${data.length}):`, data);
     try {
       if (this.buffer === null) {
@@ -234,14 +234,14 @@ export class ADSConnection extends EventEmitter {
     }
   }
 
-  private async errorHandler (err: Error) {
+  private async errorHandler(err: Error) {
     // do not try to reconnect here
     // The 'close' event will be called directly following this event.
     this.emit('error', err);
     this.logger('Socket error:', err);
   }
 
-  private async closeHandler (hadError: boolean) {
+  private async closeHandler(hadError: boolean) {
     this.logger(`Connection closed. With error? ${hadError}`);
     this.connected = false;
     this.emit('close', hadError);

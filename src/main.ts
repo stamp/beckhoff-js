@@ -26,7 +26,6 @@ export default class Client extends EventEmitter {
   private options: ClientOptions;
 
   private connectionInfo: ConnectionInfo = {
-    connected: false,
     uploadInfo: null,
     symbols: null,
     dataTypes: null,
@@ -43,9 +42,20 @@ export default class Client extends EventEmitter {
     this.connection = new ADSConnection(connectionOptions);
   }
 
+  public get connected() {
+    return this.connection.isConnected();
+  }
+
+  public get connecting() {
+    return this.connection.isConnecting();
+  }
+
   public async connect() {
-    if (this.connectionInfo.connected) {
-      throw new Error('Already Connected. Disconnect first');
+    if (this.connected) {
+      throw new Error('Already connected. Disconnect first');
+    }
+    if (this.connection.isConnecting()) {
+      throw new Error('Already connecting. Disconnect first');
     }
     this.connection.removeAllListeners();
     this.connection.on('reconnect', () => this.emit('reconnect'));
@@ -67,7 +77,7 @@ export default class Client extends EventEmitter {
     return this.connection.request(Command.Read, data);
   }
 
-  public async write (group: number, offset: number, size: number, value: Buffer): Promise<Response> {
+  public async write(group: number, offset: number, size: number, value: Buffer): Promise<Response> {
     if (value.length !== size) {
       throw new Error(`expected write size (${size} bytes) and provided data (${value.length} bytes) differs in length`);
     }
@@ -212,7 +222,7 @@ export default class Client extends EventEmitter {
    * Disconnects and removes all notificatio handles
    */
   public async close() {
-    if (this.connectionInfo.connected) {
+    if (this.connected) {
       await Promise.all(Object.values(this.connectionInfo.notifications).map(
         notificationHandle => this.unsubscribe(notificationHandle.handle)
           .catch(err => this.emit('error', err))
@@ -355,7 +365,6 @@ export default class Client extends EventEmitter {
   }
 
   private async connectHandler() {
-    this.connectionInfo.connected = true;
     try {
       if (this.options.loadSymbols === true && !this.connectionInfo.symbols) {
         this.connectionInfo.symbols = await this.getSymbols();
@@ -370,7 +379,6 @@ export default class Client extends EventEmitter {
     } catch (err) {
       this.emit('error', err);
     }
-    this.emit('connected');
   }
 
   private async resubscribeNotificationHandles() {
@@ -391,7 +399,6 @@ export default class Client extends EventEmitter {
   }
 
   private async disconnectHandler(hadError: boolean) {
-    this.connectionInfo.connected = false;
     this.emit('close', hadError);
   }
 
@@ -418,10 +425,7 @@ export default class Client extends EventEmitter {
           .then(tag => this.parseData(tag, sample))
           .then(value => {
             notificationHandle.callbacks.forEach((cb) => cb(value, timestamp));
-          })
-          .catch(err => {
-            this.emit('error', err);
-          });
+          }).catch(err => this.emit('error', err));
       }
     }
   }
