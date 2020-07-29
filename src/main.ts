@@ -18,6 +18,8 @@ import {
 } from './interfaces';
 import { ADSConnection, ADSNotifyTransmissionMode, ADSDataTypes, ADSIGRP, Command, Response } from './connection';
 
+export * from './interfaces';
+
 export default class Client extends EventEmitter {
   private readonly logger = Debug('beckhoff-js:ads');
 
@@ -26,7 +28,6 @@ export default class Client extends EventEmitter {
   private options: ClientOptions;
 
   private connectionInfo: ConnectionInfo = {
-    connected: false,
     uploadInfo: null,
     symbols: null,
     dataTypes: null,
@@ -43,9 +44,20 @@ export default class Client extends EventEmitter {
     this.connection = new ADSConnection(connectionOptions);
   }
 
+  public get connected() {
+    return this.connection.isConnected();
+  }
+
+  public get connecting() {
+    return this.connection.isConnecting();
+  }
+
   public async connect() {
-    if (this.connectionInfo.connected) {
-      throw new Error('Already Connected. Disconnect first');
+    if (this.connected) {
+      throw new Error('Already connected. Disconnect first');
+    }
+    if (this.connecting) {
+      throw new Error('Already connecting. Disconnect first');
     }
     this.connection.removeAllListeners();
     this.connection.on('reconnect', () => this.emit('reconnect'));
@@ -67,7 +79,7 @@ export default class Client extends EventEmitter {
     return this.connection.request(Command.Read, data);
   }
 
-  public async write (group: number, offset: number, size: number, value: Buffer): Promise<Response> {
+  public async write(group: number, offset: number, size: number, value: Buffer): Promise<Response> {
     if (value.length !== size) {
       throw new Error(`expected write size (${size} bytes) and provided data (${value.length} bytes) differs in length`);
     }
@@ -152,8 +164,8 @@ export default class Client extends EventEmitter {
   public async readTag(tagName: string): Promise<any> {
     this.logger(`Read Tag ${tagName}`);
     const tag = await this.findTag(tagName);
-    return this.read(tag.group, tag.offset, tag.size)
-      .then(resp => this.parseData(tag, resp.data));
+    const resp = await this.read(tag.group, tag.offset, tag.size);
+    return this.parseData(tag, resp.data);
   }
 
   public async writeTag(tagName: string, value: any): Promise<Response> {
@@ -163,56 +175,62 @@ export default class Client extends EventEmitter {
     return this.write(tag.group, tag.offset, tag.size, encoded);
   }
 
-  public async monitorTag(tagName: string, callback: (value: any) => void): Promise<number> {
+  public async monitorTag(tagName: string, callback: (value: any) => void, options?: NotifyOptions): Promise<number> {
     this.logger(`Monitor Tag ${tagName}`);
     // @see https://infosys.beckhoff.com/english.php?content=../content/1033/tcadsamsspec/html/tcadsamsspec_adscmd_adddevicenotification.htm&id=
     if (Object.keys(this.connectionInfo.notifications).length >= 550) {
       throw new Error('Maximum 550 notification handles allowed');
     }
+    if (typeof callback !== 'function') {
+      throw new Error('Notification callback function not provided');
+    }
     const tag = await this.findTag(tagName);
     if (this.connectionInfo.notifications[tagName]) {
+      if (options) {
+        console.warn(`WARNING! beckhoff-js: Already subscribed to tag ${tagName}, monitorTag options are ignored.`);
+      }
       this.connectionInfo.notifications[tagName].callbacks.push(callback);
       return Promise.resolve(this.connectionInfo.notifications[tagName].handle);
     }
     const notificationHandle = {
       handle: -1,
       tagName,
-      callbacks: [callback]
+      callbacks: [callback],
+      options
     };
-    // @IDEA: const notifyOptions: notifyOptions = {}
     this.connectionInfo.notifications[tagName] = notificationHandle;
-    return this.subscribe(tag.group, tag.offset, tag.size)
-      .then(resp => {
-        this.connectionInfo.notifications[tagName].handle = resp.data.readUInt32LE(0);
-        return this.connectionInfo.notifications[tagName].handle;
-      });
+    const resp = await this.subscribe(tag.group, tag.offset, tag.size, options);
+    this.connectionInfo.notifications[tagName].handle = resp.data.readUInt32LE(0);
+    return this.connectionInfo.notifications[tagName].handle;
   }
 
-  public async stopMonitorTag(tagName: string, callback: (value: any) => void | undefined): Promise<void> {
+  public async stopMonitorTag(tagName: string, callback?: (value: any) => void | undefined): Promise<void> {
     this.logger(`stopMonitor Tag ${tagName}`);
     const notificationHandle = this.connectionInfo.notifications[tagName];
     if (!notificationHandle) {
       throw new Error('Monitoring tag not found');
     }
-    const cbIndex = notificationHandle.callbacks.indexOf(callback);
-    if (cbIndex < 0) {
-      throw new Error('Monitoring tag callback not found');
+    if (callback) {
+      const cbIndex = notificationHandle.callbacks.indexOf(callback);
+      if (cbIndex < 0) {
+        throw new Error('Monitoring tag callback not found');
+      }
+      notificationHandle.callbacks.splice(cbIndex, 1);
+      // we have pending callbacks to unsubscribe
+      if (notificationHandle.callbacks.length > 0) {
+        return Promise.resolve();
+      }
     }
-    notificationHandle.callbacks.splice(cbIndex, 1);
-    if (notificationHandle.callbacks.length > 0) {
-      return Promise.resolve();
-    }
-    return this.unsubscribe(notificationHandle.handle)
-      .then(() => {
-        delete this.connectionInfo.notifications[tagName];
-      });
+    await this.unsubscribe(notificationHandle.handle);
+    delete this.connectionInfo.notifications[tagName];
+    return Promise.resolve();
   }
 
   /**
    * Disconnects and removes all notificatio handles
    */
   public async close() {
-    if (this.connectionInfo.connected) {
+    if (this.connected) {
       await Promise.all(Object.values(this.connectionInfo.notifications).map(
         notificationHandle => this.unsubscribe(notificationHandle.handle)
           .catch(err => this.emit('error', err))
@@ -355,7 +373,6 @@ export default class Client extends EventEmitter {
   }
 
   private async connectHandler() {
-    this.connectionInfo.connected = true;
     try {
       if (this.options.loadSymbols === true && !this.connectionInfo.symbols) {
         this.connectionInfo.symbols = await this.getSymbols();
@@ -370,59 +387,64 @@ export default class Client extends EventEmitter {
     } catch (err) {
       this.emit('error', err);
     }
-    this.emit('connected');
   }
 
   private async resubscribeNotificationHandles() {
-    await Promise.all(Object.values(this.connectionInfo.notifications).map(
-      (notificationHandle) => this.unsubscribe(notificationHandle.handle)
-        .catch(err => this.emit('error', err))
-    ));
-    await Promise.all(Object.values(this.connectionInfo.notifications).map(
-      async (notificationHandle) => {
-        const tag = await this.findTag(notificationHandle.tagName);
-        return this.subscribe(tag.group, tag.offset, tag.size)
-          .then(({ data }) => {
-            this.connectionInfo.notifications[notificationHandle.tagName].handle = data.readUInt32LE(0);
-          })
-          .catch(err => this.emit('error', err));
+    const unsubscribePromises = Object.values(this.connectionInfo.notifications).map(
+      (notification) => this.unsubscribe(notification.handle).catch(err => this.emit('error', err))
+    );
+    await Promise.all(unsubscribePromises);
+    const subscribePromises = Object.values(this.connectionInfo.notifications).map(
+      async (notification) => {
+        try {
+          const tag = await this.findTag(notification.tagName);
+          const { data } = await this.subscribe(tag.group, tag.offset, tag.size, notification.options);
+          this.connectionInfo.notifications[notification.tagName].handle = data.readUInt32LE(0);
+        } catch (err)  {
+          this.emit('error', err);
+        }
       }
-    ));
+    );
+    await Promise.all(subscribePromises);
   }
 
   private async disconnectHandler(hadError: boolean) {
-    this.connectionInfo.connected = false;
     this.emit('close', hadError);
   }
 
   private async notificationHandler(packet: Response) {
-    const { data } = packet;
-    const stamps = data.readUInt32LE(0);
-    let buffer = data.slice(4);
-    for (let stampNumber=0; stampNumber < stamps; stampNumber+=1) {
-      const timestampLow = buffer.readUInt32LE(0);
-      const timestampHigh = buffer.readUInt32LE(4);
-      const samples = buffer.readUInt32LE(8);
-      const timestamp = FileTime.toDate(timestampLow,timestampHigh);
-      buffer = buffer.slice(12);
-      for (let sampleNumber=0; sampleNumber < samples; sampleNumber+=1) {
-        const handle = buffer.readUInt32LE(0);
-        const size = buffer.readUInt32LE(4);
-        const sample = buffer.slice(8, 8 + size);
-        const notificationHandle = Object.values(this.connectionInfo.notifications).find(nh => nh.handle === handle);
-        if (!notificationHandle) {
-          // eslint-disable-next-line no-continue
-          continue;
+    try {
+      const { data } = packet;
+      const stamps = data.readUInt32LE(0);
+      let buffer = data.slice(4);
+      for (let stampNumber=0; stampNumber < stamps; stampNumber+=1) {
+        const timestampLow = buffer.readUInt32LE(0);
+        const timestampHigh = buffer.readUInt32LE(4);
+        const timestamp = FileTime.toDate(timestampLow,timestampHigh);
+        let samples = buffer.readUInt32LE(8);
+        buffer = buffer.slice(12);
+        if (samples > 1024) {
+          this.emit('error', new Error('Too many notification samples received'));
+          // lets parse first 1024 samples
+          samples = 1024;
         }
-        this.findTag(notificationHandle.tagName)
-          .then(tag => this.parseData(tag, sample))
-          .then(value => {
-            notificationHandle.callbacks.forEach((cb) => cb(value, timestamp));
-          })
-          .catch(err => {
-            this.emit('error', err);
-          });
+        for (let sampleNumber=0; sampleNumber < samples; sampleNumber+=1) {
+          const handle = buffer.readUInt32LE(0);
+          const size = buffer.readUInt32LE(4);
+          const sample = buffer.slice(8, 8 + size);
+          const notificationHandle = Object.values(this.connectionInfo.notifications).find(nh => nh.handle === handle);
+          if (!notificationHandle) {
+          // eslint-disable-next-line no-continue
+            continue;
+          }
+          this.findTag(notificationHandle.tagName)
+            .then(tag => this.parseData(tag, sample))
+            .then(value => notificationHandle.callbacks.forEach((cb) => cb(value, timestamp)))
+            .catch(err => this.emit('error', err));
+        }
       }
+    } catch(err) {
+      this.emit('error', err);
     }
   }
 
@@ -430,7 +452,7 @@ export default class Client extends EventEmitter {
     // At the latest after this time, the ADS Device Notification is called. The unit is 1ms.
     const maxDelay = options && options.maxDelay? options.maxDelay : 200;
     // The ADS server checks if the value changes in this time slice. The unit is 1m
-    const cycleTime = options && options.cycleTime? options.cycleTime : 50;
+    const cycleTime = options && options.cycleTime? options.cycleTime : 200;
     const TransmissionMode = options && options.transmissionMode?
       options.transmissionMode : ADSNotifyTransmissionMode.OnChange;
     this.logger(`ADS addDeviceNotification: g${group}, o${offset}, s${size}, maxDelay ${maxDelay}, cycleTime ${cycleTime} TransmissionMode ${TransmissionMode}`);

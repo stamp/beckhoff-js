@@ -44,9 +44,9 @@ export interface NotificationHandle {
   handle: number,
   tagName: string,
   callbacks: ((value:any, timestamp: number) => void)[];
+  options?: NotifyOptions
 }
 export interface ConnectionInfo {
-  connected: boolean;
   // Upload information
   uploadInfo: UploadInfo | null;
   uploadInfoTimestamp?: number;
